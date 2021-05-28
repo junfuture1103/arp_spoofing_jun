@@ -190,7 +190,7 @@ int main(int argc, char* argv[]) {
             //if get ARP packet from ???? than we attack again
             if (ntohs(eth_hdr->ether_type) == ETHERTYPE_ARP){
                 //attack packet
-                res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&out_packet), sizeof(EthArpPacket));
+                res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
                 if (res != 0) {
                     fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
                 }
@@ -198,14 +198,14 @@ int main(int argc, char* argv[]) {
             }
 
             if (ntohs(eth_hdr->ether_type) != ETHERTYPE_IP){
-                       //printf("PASS! type : %d\n", ntohs(eth_hdr->ether_type));
-                       continue;
-                   }
-                   if(ip_hdr_v4->ip_p != IPPROTO_TCP){
-                       //printf("PASS! protocol : %d\n", ip_hdr_v4->ip_p);
-                       continue;
-                   }
-                   printf("%u bytes captured\n", header->caplen);
+               //printf("PASS! type : %d\n", ntohs(eth_hdr->ether_type));
+               continue;
+               }
+               if(ip_hdr_v4->ip_p != IPPROTO_TCP){
+                   //printf("PASS! protocol : %d\n", ip_hdr_v4->ip_p);
+                   continue;
+               }
+               printf("%u bytes captured\n", header->caplen);
 
            //ethernet hdr source_mac
            printf("\nsour MAC : ");
