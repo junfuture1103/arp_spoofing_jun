@@ -57,8 +57,11 @@ int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
         close(sockfd);
         return -1;
     }
-    memcpy(ip_addr, ifr.ifr_addr.sa_data, Ip::SIZE);
-
+    char ipstr[40];
+    //memcpy((void*)ip_addr, ifr.ifr_addr.sa_data, Ip::SIZE);
+    inet_ntop(AF_INET, ifr.ifr_addr.sa_data+2, ipstr, sizeof(struct sockaddr));
+    printf("%s", ipstr);
+    *ip_addr = Ip(ipstr);
     close(sockfd);
     return 0;
 }
@@ -99,7 +102,7 @@ int main(int argc, char* argv[]) {
     packet.arp_.pln_ = Ip::SIZE;
     packet.arp_.op_ = htons(ArpHdr::Request);
     packet.arp_.smac_ = Mac(MAC_ADD); //my MAC_ADD
-    packet.arp_.sip_ = htonl(Ip("0.0.0.0")); //my ip - any ip in here can get reply packet
+    packet.arp_.sip_ = htonl(IP_ADD); //my ip - any ip in here can get reply packet
     packet.arp_.tmac_ = Mac("00:00:00:00:00:00");
     packet.arp_.tip_ = htonl(s_ip);  //victim ip
 
